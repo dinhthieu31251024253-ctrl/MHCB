@@ -15,8 +15,9 @@ st.set_page_config(
     layout="wide",
 )
 
-DURATION = 20        # số giây audio đọc để trích xuất đặc trưng
-SAMPLE_RATE = 22050   # tần số lấy mẫu
+DURATION = 20        # Số giây audio đọc để trích xuất đặc trưng
+OFFSET = 10.0         # Giây bắt đầu đọc (Đổi thành 10.0 nếu trên Colab bạn cắt từ giây thứ 10)
+SAMPLE_RATE = 22050   # Tần số lấy mẫu
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
 # Thứ tự đặc trưng PHẢI khớp chính xác với lúc scaler được train
@@ -38,8 +39,8 @@ LABEL_MAP = {
     1: "🤖 Nhạc AI",
 }
 LABEL_COLOR = {
-    0: "#27ae60",  # xanh lá
-    1: "#e74c3c",  # đỏ
+    0: "#27ae60",  # Xanh lá
+    1: "#e74c3c",  # Đỏ
 }
 
 
@@ -57,22 +58,17 @@ def load_model_and_scaler():
 
 
 # ============================================================
-# HÀM PHỤ: LẤY TEMPO ỔN ĐỊNH QUA CÁC PHIÊN BẢN LIBROSA KHÁC NHAU
+# HÀM PHỤ: LẤY TEMPO ỔN ĐỊNH QUA CÁC PHIÊN BẢN LIBROSA
 # ============================================================
 def get_tempo(y, sr, onset_env):
-    """librosa đổi vị trí hàm tempo giữa các phiên bản (beat.tempo ->
-    feature.rhythm.tempo), nên thử lần lượt nhiều cách để đảm bảo tương thích."""
-    # Cách 1: API mới (librosa >= 0.10)
     try:
         return float(librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr)[0])
     except Exception:
         pass
-    # Cách 2: API cũ (librosa < 0.10)
     try:
         return float(librosa.beat.tempo(onset_envelope=onset_env, sr=sr)[0])
     except Exception:
         pass
-    # Cách 3: fallback qua beat_track
     try:
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=onset_env)
         return float(tempo)
@@ -84,7 +80,8 @@ def get_tempo(y, sr, onset_env):
 # 2 & 3. TRÍCH XUẤT 35 ĐẶC TRƯNG ÂM THANH
 # ============================================================
 def extract_features(file_path: str) -> np.ndarray:
-    y, sr = librosa.load(file_path, sr=SAMPLE_RATE, duration=DURATION, mono=True)
+    # Đã bổ sung tham số offset=OFFSET để đồng bộ thời điểm cắt nhạc với Colab
+    y, sr = librosa.load(file_path, sr=SAMPLE_RATE, offset=OFFSET, duration=DURATION, mono=True)
 
     if y is None or len(y) == 0:
         raise ValueError("File audio rỗng hoặc không đọc được dữ liệu.")
@@ -119,14 +116,23 @@ def extract_features(file_path: str) -> np.ndarray:
 
 
 # ============================================================
-# 4. DỰ ĐOÁN THỰC TẾ
+# 4. DỰ ĐOÁN THỰC TẾ (ĐÃ THÊM NGƯỠNG THRESHOLD 70%)
 # ============================================================
-def predict_label(file_path: str, model, scaler):
+def predict_label(file_path: str, model, scaler, threshold: float = 0.70):
     features = extract_features(file_path)          # (1, 35)
     features_scaled = scaler.transform(features)     # BẮT BUỘC scale trước
-    pred_class = int(model.predict(features_scaled)[0])
+
     proba = model.predict_proba(features_scaled)[0]
-    confidence = float(proba[pred_class]) * 100
+    prob_ai = proba[1]  # Xác suất mô hình đoán là Nhạc AI (Nhãn 1)
+
+    # Chỉ khi độ tự tin AI >= 70% thì mới báo là AI, dưới 70% đưa về Nhạc Thật
+    if prob_ai >= threshold:
+        pred_class = 1
+        confidence = prob_ai * 100
+    else:
+        pred_class = 0
+        confidence = (1 - prob_ai) * 100
+
     return pred_class, confidence
 
 
@@ -155,7 +161,6 @@ if uploaded_zip is not None:
         with open(zip_path, "wb") as f:
             f.write(uploaded_zip.getbuffer())
 
-        # ---- Giải nén ----
         try:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(tmp_dir)
@@ -166,7 +171,6 @@ if uploaded_zip is not None:
             st.error(f"❌ Lỗi khi giải nén file ZIP: {e}")
             st.stop()
 
-        # ---- Quét toàn bộ file audio (kể cả thư mục con) ----
         audio_paths = []
         for root, _, files in os.walk(tmp_dir):
             for fname in files:
@@ -220,6 +224,5 @@ if uploaded_zip is not None:
 
 st.caption(
     "Model: Random Forest / Logistic Regression — 35 đặc trưng âm thanh trích xuất bằng librosa "
-    "(ZCR, RMS, tempo, onset, spectral centroid/bandwidth/rolloff, 13 MFCC mean+std, chroma). "
-    "Kết quả mang tính tham khảo, phụ thuộc vào chất lượng và độ đa dạng của dữ liệu huấn luyện."
+    "(ZCR, RMS, tempo, onset, spectral centroid/bandwidth/rolloff, 13 MFCC mean+std, chroma)."
 )
