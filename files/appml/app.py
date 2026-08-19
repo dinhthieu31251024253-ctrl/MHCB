@@ -15,13 +15,10 @@ st.set_page_config(
     layout="wide",
 )
 
-DURATION = 20         # Số giây audio đọc để trích xuất đặc trưng
-OFFSET = 0.0          # ĐÃ SỬA: về 0.0 để khớp với lúc train (Colab cắt từ đầu bài, không offset)
+DURATION = 20        # Số giây audio đọc để trích xuất đặc trưng
+OFFSET = 10.0         # Giây bắt đầu đọc (Đổi thành 10.0 nếu trên Colab bạn cắt từ giây thứ 10)
 SAMPLE_RATE = 22050   # Tần số lấy mẫu
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
-
-# Bật/tắt in log debug ra terminal Streamlit (không hiện trên giao diện web)
-DEBUG_MODE = True
 
 # Thứ tự đặc trưng PHẢI khớp chính xác với lúc scaler được train
 FEATURE_ORDER = [
@@ -61,22 +58,29 @@ def load_model_and_scaler():
 
 
 # ============================================================
-# HÀM PHỤ: TÍNH TEMPO — ĐÃ SỬA để khớp CHÍNH XÁC với lúc train
-# Lúc train (Colab) dùng: librosa.beat.beat_track(y=y, sr=sr)
-# nên ở đây phải dùng đúng cùng 1 hàm, không dùng librosa.feature.rhythm.tempo
-# (2 hàm khác nhau có thể cho ra giá trị tempo khác nhau cho cùng 1 đoạn audio,
-#  làm lệch phân bố dữ liệu đưa vào scaler/model)
+# HÀM PHỤ: LẤY TEMPO ỔN ĐỊNH QUA CÁC PHIÊN BẢN LIBROSA
 # ============================================================
-def get_tempo(y, sr):
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-    return float(tempo)
+def get_tempo(y, sr, onset_env):
+    try:
+        return float(librosa.feature.rhythm.tempo(onset_envelope=onset_env, sr=sr)[0])
+    except Exception:
+        pass
+    try:
+        return float(librosa.beat.tempo(onset_envelope=onset_env, sr=sr)[0])
+    except Exception:
+        pass
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr, onset_envelope=onset_env)
+        return float(tempo)
+    except Exception:
+        return 0.0
 
 
 # ============================================================
 # 2 & 3. TRÍCH XUẤT 35 ĐẶC TRƯNG ÂM THANH
 # ============================================================
 def extract_features(file_path: str) -> np.ndarray:
-    # offset=0.0 (mặc định) để khớp đúng lúc train: cắt đoạn ĐẦU bài, không dịch chuyển
+    # Đã bổ sung tham số offset=OFFSET để đồng bộ thời điểm cắt nhạc với Colab
     y, sr = librosa.load(file_path, sr=SAMPLE_RATE, offset=OFFSET, duration=DURATION, mono=True)
 
     if y is None or len(y) == 0:
@@ -85,7 +89,7 @@ def extract_features(file_path: str) -> np.ndarray:
     zcr = librosa.feature.zero_crossing_rate(y)[0]
     rms = librosa.feature.rms(y=y)[0]
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    tempo = get_tempo(y, sr)   # ĐÃ SỬA: dùng beat_track, khớp lúc train
+    tempo = get_tempo(y, sr, onset_env)
 
     spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
     spec_bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)[0]
@@ -112,20 +116,16 @@ def extract_features(file_path: str) -> np.ndarray:
 
 
 # ============================================================
-# 4. DỰ ĐOÁN THỰC TẾ
-# ĐÃ SỬA: threshold về 0.5 (ngưỡng chuẩn) để không che giấu vấn đề gốc.
-# Thêm debug in ra prob_ai thô để chẩn đoán model có bị lệch hay không.
+# 4. DỰ ĐOÁN THỰC TẾ (ĐÃ THÊM NGƯỠNG THRESHOLD 70%)
 # ============================================================
-def predict_label(file_path: str, model, scaler, threshold: float = 0.5):
-    features = extract_features(file_path)           # (1, 35)
-    features_scaled = scaler.transform(features)      # BẮT BUỘC scale trước
+def predict_label(file_path: str, model, scaler, threshold: float = 0.65):
+    features = extract_features(file_path)          # (1, 35)
+    features_scaled = scaler.transform(features)     # BẮT BUỘC scale trước
 
     proba = model.predict_proba(features_scaled)[0]
     prob_ai = proba[1]  # Xác suất mô hình đoán là Nhạc AI (Nhãn 1)
 
-    if DEBUG_MODE:
-        print(f"[DEBUG] {os.path.basename(file_path)}: prob_ai = {prob_ai:.4f}")
-
+    # Chỉ khi độ tự tin AI >= 70% thì mới báo là AI, dưới 70% đưa về Nhạc Thật
     if prob_ai >= threshold:
         pred_class = 1
         confidence = prob_ai * 100
@@ -133,7 +133,7 @@ def predict_label(file_path: str, model, scaler, threshold: float = 0.5):
         pred_class = 0
         confidence = (1 - prob_ai) * 100
 
-    return pred_class, confidence, prob_ai
+    return pred_class, confidence
 
 
 # ============================================================
@@ -146,15 +146,6 @@ st.markdown(
     "đã train** để dự đoán từng bài là **🤖 Nhạc AI** hay **🎤 Nhạc do nhạc sĩ thật tạo**, "
     "kèm theo độ tự tin (%)."
 )
-
-# Cho phép chỉnh ngưỡng ngay trên giao diện để dễ thử nghiệm, không cần sửa code
-with st.sidebar:
-    st.header("⚙️ Cài đặt")
-    threshold_ui = st.slider(
-        "Ngưỡng xác suất để kết luận là AI",
-        min_value=0.0, max_value=1.0, value=0.5, step=0.05
-    )
-    show_debug = st.checkbox("Hiện xác suất thô (prob_ai) trên giao diện", value=True)
 
 try:
     model, scaler = load_model_and_scaler()
@@ -195,7 +186,6 @@ if uploaded_zip is not None:
             st.subheader("📋 Kết quả phân loại")
 
             progress = st.progress(0)
-            prob_list = []  # lưu lại toàn bộ prob_ai để xem thống kê tổng quan cuối trang
 
             for idx, path in enumerate(audio_paths):
                 fname = os.path.basename(path)
@@ -212,11 +202,7 @@ if uploaded_zip is not None:
 
                 with col_right:
                     try:
-                        pred_class, confidence, prob_ai = predict_label(
-                            path, model, scaler, threshold=threshold_ui
-                        )
-                        prob_list.append(prob_ai)
-
+                        pred_class, confidence = predict_label(path, model, scaler)
                         label = LABEL_MAP[pred_class]
                         color = LABEL_COLOR[pred_class]
                         st.markdown(
@@ -227,10 +213,6 @@ if uploaded_zip is not None:
                             unsafe_allow_html=True,
                         )
                         st.progress(min(max(confidence / 100, 0.0), 1.0))
-
-                        if show_debug:
-                            st.caption(f"🔍 prob_ai thô (trước ngưỡng): {prob_ai:.3f}")
-
                     except Exception as e:
                         st.markdown(
                             f"<span style='color:#f39c12'>⚠️ Không trích xuất được đặc trưng: {e}</span>",
@@ -239,22 +221,6 @@ if uploaded_zip is not None:
 
                 st.markdown("---")
                 progress.progress((idx + 1) / len(audio_paths))
-
-            # Thống kê tổng quan prob_ai — giúp phát hiện nhanh nếu model bị lệch hệ thống
-            if prob_list:
-                st.subheader("📊 Thống kê xác suất AI (prob_ai) toàn bộ playlist")
-                prob_arr = np.array(prob_list)
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Trung bình prob_ai", f"{prob_arr.mean():.3f}")
-                col2.metric("Nhỏ nhất", f"{prob_arr.min():.3f}")
-                col3.metric("Lớn nhất", f"{prob_arr.max():.3f}")
-
-                if prob_arr.mean() > 0.7:
-                    st.warning(
-                        "⚠️ Trung bình prob_ai toàn playlist khá cao (>0.7) — nếu playlist này "
-                        "chủ yếu là nhạc thật, đây là dấu hiệu model đang bị lệch (thiên vị đoán AI), "
-                        "cần xem lại dữ liệu huấn luyện hoặc cách trích đặc trưng."
-                    )
 
 st.caption(
     "Model: Random Forest — 35 đặc trưng âm thanh trích xuất bằng librosa "
