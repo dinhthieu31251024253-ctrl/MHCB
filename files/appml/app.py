@@ -118,7 +118,7 @@ def extract_features(file_path: str) -> np.ndarray:
 # ============================================================
 # 4. DỰ ĐOÁN THỰC TẾ (ĐÃ THÊM NGƯỠNG THRESHOLD 70%)
 # ============================================================
-def predict_label(file_path: str, model, scaler, threshold: float = 0.70):
+def predict_label(file_path: str, model, scaler, threshold: float = 0.60):
     features = extract_features(file_path)          # (1, 35)
     features_scaled = scaler.transform(features)     # BẮT BUỘC scale trước
 
