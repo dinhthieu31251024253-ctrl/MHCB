@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 DURATION = 20        # Số giây audio đọc để trích xuất đặc trưng
-OFFSET = 10.0         # Giây bắt đầu đọc (Đổi thành 10.0 nếu trên Colab bạn cắt từ giây thứ 10)
+OFFSET = 0.0         # Giây bắt đầu đọc (Đổi thành 10.0 nếu trên Colab bạn cắt từ giây thứ 10)
 SAMPLE_RATE = 22050   # Tần số lấy mẫu
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac")
 
@@ -118,7 +118,7 @@ def extract_features(file_path: str) -> np.ndarray:
 # ============================================================
 # 4. DỰ ĐOÁN THỰC TẾ (ĐÃ THÊM NGƯỠNG THRESHOLD 70%)
 # ============================================================
-def predict_label(file_path: str, model, scaler, threshold: float = 0.65):
+def predict_label(file_path: str, model, scaler, threshold: float = 0.5):
     features = extract_features(file_path)          # (1, 35)
     features_scaled = scaler.transform(features)     # BẮT BUỘC scale trước
 
